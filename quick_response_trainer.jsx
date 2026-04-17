@@ -83,18 +83,17 @@ const App = () => {
     const catInfo = CATEGORIES.find(c => c.id === catId);
     const randomSeed = Math.floor(Math.random() * 1000);
     
-    // 指示を極限までシンプルにして生成速度を優先
     const userQuery = `Context: ${catInfo.context} (Seed: ${randomSeed}). Generate 1 short Japanese sentence (max 15 chars) and its English translation with IPA phonetics for each word. Avoid: API, Error, Bug, Budget. JSON format: {"jp":"...","en":"...","ipa":"..."}`;
 
     try {
       let result = null;
       let retries = 0;
-      const maxRetries = 3; // リトライ回数を減らし、1回の試行を確実に
+      const maxRetries = 3;
 
       while (retries < maxRetries) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒でタイムアウト
+          const timeoutId = setTimeout(() => controller.abort(), 10000);
 
           const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
             method: 'POST',
@@ -104,7 +103,6 @@ const App = () => {
               contents: [{ parts: [{ text: userQuery }] }],
               generationConfig: { 
                 responseMimeType: "application/json",
-                // スキーマ定義を簡略化して解析負荷を下げる
                 responseSchema: {
                   type: "OBJECT",
                   properties: {
@@ -135,7 +133,6 @@ const App = () => {
       }
 
       setCurrentDrill(result);
-      // 非同期で音声準備（表示を妨げない）
       prefetchAudio(result.en);
     } catch (err) {
       console.error("Generation failed:", err);
@@ -235,11 +232,15 @@ const App = () => {
     const ipas = currentDrill.ipa.replace(/\//g, '').split(' ');
 
     return (
-      <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 mb-4">
+      <div className="flex flex-wrap justify-center gap-x-5 gap-y-4 mb-4">
         {words.map((word, idx) => (
           <div key={idx} className="flex flex-col items-center">
-            <span className="text-2xl font-bold text-slate-800 dark:text-white leading-tight">{word}</span>
-            <span className="text-xs font-medium text-blue-500/80 dark:text-blue-400/80 font-mono tracking-wider">
+            {/* 英文単語 */}
+            <span className="text-2xl font-bold text-slate-800 dark:text-white leading-tight">
+              {word}
+            </span>
+            {/* 発音記号 (サイズを大きく調整) */}
+            <span className="text-[0.95rem] font-medium text-blue-600 dark:text-blue-400 font-mono tracking-normal mt-1">
               {ipas[idx] ? `/${ipas[idx]}/` : ''}
             </span>
           </div>
@@ -300,9 +301,9 @@ const App = () => {
                 
                 {showAnswer && (
                   <div className="mt-6 border-t border-slate-100 dark:border-slate-700 pt-6 animate-in slide-in-from-top-4 duration-300">
-                    <span className="text-[10px] font-black text-green-500 uppercase tracking-widest mb-4 flex items-center justify-center gap-1"><Languages size={12} /> Natural English</span>
+                    <span className="text-[10px] font-black text-green-500 uppercase tracking-widest mb-6 flex items-center justify-center gap-1"><Languages size={12} /> Natural English</span>
                     {renderPhonetics()}
-                    <button onClick={speakCached} className="mt-4 p-3 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all active:scale-90" disabled={isSpeaking || !cachedAudio}>
+                    <button onClick={speakCached} className="mt-6 p-3 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all active:scale-90" disabled={isSpeaking || !cachedAudio}>
                       <Volume2 size={28} className={isSpeaking ? 'opacity-50 animate-pulse' : ''} />
                     </button>
                   </div>
