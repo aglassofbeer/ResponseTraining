@@ -168,7 +168,7 @@ const App = () => {
     const randomSeed = Math.random().toString(36).substring(7); // よりランダムな文字列
     const lastTopics = history.slice(-3).map(h => h.jp).join(", ");
     
-    const systemPrompt = "You are a creative English teacher. Always provide standard English IPA phonetics. Never use Japanese Romaji or Japanese pronunciations in the 'ipa' field. Variety is key.";
+    const systemPrompt = "You are a creative English teacher specialized in General American accent. Always provide US English IPA phonetics (General American). Use /r/ in rhotic positions. Never use Japanese Romaji or Japanese pronunciations in the 'ipa' field. Variety is key.";
     const userQuery = `
       Context: ${catInfo.context}
       Seed: ${randomSeed}
@@ -177,7 +177,7 @@ const App = () => {
       Task:
       1. Create a unique short Japanese sentence (max 15 chars).
       2. Provide a natural conversational English translation (simple vocabulary).
-      3. Provide the English IPA for the translation.
+      3. Provide the US English (General American) IPA for the translation. Ensure it reflects US pronunciation (e.g., 'water' with flap t, 'hot' with /ɑ/).
       
       Instructions: 
       - Be specific and varied. 
