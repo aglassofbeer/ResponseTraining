@@ -22,7 +22,10 @@ import {
   AlertCircle,
   Bookmark,
   Trash2,
-  ChevronRight
+  ChevronRight,
+  Mic,
+  Square,
+  Play
 } from 'lucide-react';
 
 const apiKey = ""; // ランタイムから提供されるAPIキー
@@ -74,10 +77,14 @@ const App = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPrefetchingAudio, setIsPrefetchingAudio] = useState(false);
   const [error, setError] = useState(null);
-  const [history, setHistory] = useState([]); // 直近の履歴を保持して重複を避ける
-  
-  // 復習用リストの管理
+  const [history, setHistory] = useState([]); 
   const [savedDrills, setSavedDrills] = useState([]);
+
+  // --- 録音用ステート ---
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState(null);
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
 
   // 初期ロード：保存されたデータの読み込み
   useEffect(() => {
@@ -163,9 +170,10 @@ const App = () => {
     setCurrentDrill(null);
     setShowAnswer(false);
     setCachedAudio(null);
+    setRecordedAudioUrl(null); // 前回の録音をクリア
 
     const catInfo = CATEGORIES.find(c => c.id === catId);
-    const randomSeed = Math.random().toString(36).substring(7); // よりランダムな文字列
+    const randomSeed = Math.random().toString(36).substring(7);
     const lastTopics = history.slice(-3).map(h => h.jp).join(", ");
     
     const systemPrompt = "You are a creative English teacher specialized in General American accent. Always provide US English IPA phonetics (General American). Use /r/ in rhotic positions. Never use Japanese Romaji or Japanese pronunciations in the 'ipa' field. Variety is key.";
@@ -179,63 +187,37 @@ const App = () => {
       2. Provide a natural conversational English translation (simple vocabulary).
       3. Provide the US English (General American) IPA for the translation. Ensure it reflects US pronunciation (e.g., 'water' with flap t, 'hot' with /ɑ/).
       
-      Instructions: 
-      - Be specific and varied. 
-      - If Sales, think about contracts, appointments, demos, or trust-building. 
-      - Do NOT repeat 'pricing' or 'competitors' if they were used recently.
-      
       JSON: {"jp":"...","en":"...","ipa":"..."}`;
 
     try {
-      let result = null;
-      let retries = 0;
-      const maxRetries = 3;
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ parts: [{ text: userQuery }] }],
+          generationConfig: { 
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                jp: { type: "STRING" },
+                en: { type: "STRING" },
+                ipa: { type: "STRING" }
+              },
+              required: ["jp", "en", "ipa"]
+            }
+          }
+        })
+      });
 
-      while (retries < maxRetries) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: systemPrompt }] },
-              contents: [{ parts: [{ text: userQuery }] }],
-              generationConfig: { 
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "OBJECT",
-                  properties: {
-                    jp: { type: "STRING" },
-                    en: { type: "STRING" },
-                    ipa: { type: "STRING" }
-                  },
-                  required: ["jp", "en", "ipa"]
-                }
-              }
-            })
-          });
-
-          clearTimeout(timeoutId);
-          if (!response.ok) throw new Error("API_ERROR");
-          
-          const data = await response.json();
-          const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!content) throw new Error("EMPTY_RESPONSE");
-          
-          result = JSON.parse(content);
-          break;
-        } catch (e) {
-          retries++;
-          if (retries >= maxRetries) throw e;
-          await new Promise(r => setTimeout(r, 1000));
-        }
-      }
+      if (!response.ok) throw new Error("API_ERROR");
+      const data = await response.json();
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const result = JSON.parse(content);
 
       setCurrentDrill(result);
-      setHistory(prev => [...prev, result].slice(-10)); // 履歴を更新
+      setHistory(prev => [...prev, result].slice(-10));
       prefetchAudio(result.en);
     } catch (err) {
       setError("接続が不安定です。もう一度お試しください。");
@@ -250,6 +232,40 @@ const App = () => {
       const audio = new Audio(audioUrl);
       audio.onended = () => setIsSpeaking(false);
       audio.play().catch(() => setIsSpeaking(false));
+    }
+  };
+
+  // --- 録音ロジック ---
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      chunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        setRecordedAudioUrl(url);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordedAudioUrl(null);
+    } catch (err) {
+      console.error("Microphone access denied", err);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
     }
   };
 
@@ -335,9 +351,39 @@ const App = () => {
 
                 <span className="text-[10px] font-black text-green-500 uppercase tracking-widest mb-6 flex items-center justify-center gap-1"><Languages size={12} /> Natural English</span>
                 {renderPhonetics(currentDrill.en, currentDrill.ipa)}
-                <button onClick={() => speak(cachedAudio)} className="mt-6 p-3 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all active:scale-90" disabled={isSpeaking || !cachedAudio}>
-                  <Volume2 size={28} className={isSpeaking ? 'opacity-50 animate-pulse' : ''} />
-                </button>
+                
+                <div className="flex items-center justify-center gap-8 mt-6">
+                  {/* モデル音声再生 */}
+                  <div className="flex flex-col items-center gap-2">
+                    <button onClick={() => speak(cachedAudio)} className="p-4 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all active:scale-90 border border-blue-100 dark:border-blue-800" disabled={isSpeaking || !cachedAudio}>
+                      <Volume2 size={32} className={isSpeaking ? 'opacity-50 animate-pulse' : ''} />
+                    </button>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Model</span>
+                  </div>
+
+                  {/* 録音ボタン */}
+                  <div className="flex flex-col items-center gap-2">
+                    <button 
+                      onClick={isRecording ? stopRecording : startRecording} 
+                      className={`p-4 rounded-full transition-all active:scale-90 border ${isRecording ? 'bg-red-500 text-white border-red-500 animate-pulse' : 'text-slate-400 hover:bg-slate-50 border-slate-100'}`}
+                    >
+                      {isRecording ? <Square size={32} fill="currentColor" /> : <Mic size={32} />}
+                    </button>
+                    <span className={`text-[10px] font-bold uppercase tracking-tighter ${isRecording ? 'text-red-500' : 'text-slate-400'}`}>
+                      {isRecording ? 'Recording' : 'Record'}
+                    </span>
+                  </div>
+
+                  {/* 録音再生 */}
+                  {recordedAudioUrl && (
+                    <div className="flex flex-col items-center gap-2 animate-in fade-in zoom-in">
+                      <button onClick={() => speak(recordedAudioUrl)} className="p-4 text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-full transition-all active:scale-90 border border-green-100 dark:border-green-800">
+                        <Play size={32} fill="currentColor" />
+                      </button>
+                      <span className="text-[10px] font-bold text-green-500 uppercase tracking-tighter">Your Voice</span>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -416,7 +462,7 @@ const App = () => {
       <header className="max-w-4xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4 mb-10">
         <div>
           <h1 className="text-4xl font-black bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent tracking-tighter">QR TRAINER</h1>
-          <p className="text-slate-500 font-bold text-sm">Turbo Generation & Review</p>
+          <p className="text-slate-500 font-bold text-sm">Turbo Generation & Comparison</p>
         </div>
         <div className="flex bg-slate-200 dark:bg-slate-800 p-1 rounded-xl shadow-inner">
           <button 
@@ -444,7 +490,7 @@ const App = () => {
       <footer className="max-w-4xl mx-auto mt-12 text-center text-slate-400">
         <div className="inline-flex items-center gap-2 px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-[10px] font-bold shadow-sm">
           <Settings size={14} className="text-blue-500" />
-          <span>Gemini 2.5 Flash / Persistence: LocalStorage</span>
+          <span>Compare Mode / US English Focus</span>
         </div>
       </footer>
     </div>
