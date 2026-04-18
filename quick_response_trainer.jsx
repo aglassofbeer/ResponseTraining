@@ -71,11 +71,13 @@ const App = () => {
   const [activeTab, setActiveTab] = useState('drill');
   const [category, setCategory] = useState('tech_meeting');
   const [currentDrill, setCurrentDrill] = useState(null);
+  const [nextDrill, setNextDrill] = useState(null); // 次の問題を保持
   const [showAnswer, setShowAnswer] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [cachedAudio, setCachedAudio] = useState(null);
+  const [nextAudio, setNextAudio] = useState(null); // 次の音声ファイルを保持
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isPrefetchingAudio, setIsPrefetchingAudio] = useState(false);
+  const [isPrefetching, setIsPrefetching] = useState(false); // バックグラウンド生成中か
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]); 
   const [savedDrills, setSavedDrills] = useState([]);
@@ -86,7 +88,7 @@ const App = () => {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
-  // 初期ロード：保存されたデータの読み込み
+  // 初期ロード：保存されたデータの読み込みと最初の問題生成
   useEffect(() => {
     const saved = localStorage.getItem('qr_trainer_saved_drills');
     if (saved) {
@@ -96,7 +98,7 @@ const App = () => {
         console.error("Failed to parse saved drills");
       }
     }
-    generateNewDrill('tech_meeting');
+    initApp();
   }, []);
 
   // データの永続化
@@ -127,8 +129,7 @@ const App = () => {
     return new Blob([buffer], { type: 'audio/wav' });
   };
 
-  const prefetchAudio = async (text) => {
-    setIsPrefetchingAudio(true);
+  const fetchAudio = async (text) => {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -153,30 +154,18 @@ const App = () => {
       for (let i = 0; i < pcmData.length; i++) {
         pcmData[i] = (binaryString.charCodeAt(i * 2 + 1) << 8) | binaryString.charCodeAt(i * 2);
       }
-      const url = URL.createObjectURL(pcmToWav(pcmData, sampleRate));
-      setCachedAudio(url);
-      return url;
+      return URL.createObjectURL(pcmToWav(pcmData, sampleRate));
     } catch (err) {
-      console.warn("Audio prefetch failed");
       return null;
-    } finally {
-      setIsPrefetchingAudio(false);
     }
   };
 
-  const generateNewDrill = async (catId) => {
-    setIsGenerating(true);
-    setError(null);
-    setCurrentDrill(null);
-    setShowAnswer(false);
-    setCachedAudio(null);
-    setRecordedAudioUrl(null); // 前回の録音をクリア
-
+  const generateDrillObject = async (catId) => {
     const catInfo = CATEGORIES.find(c => c.id === catId);
     const randomSeed = Math.random().toString(36).substring(7);
-    const lastTopics = history.slice(-3).map(h => h.jp).join(", ");
+    const lastTopics = history.slice(-5).map(h => h.jp).join(", ");
     
-    const systemPrompt = "You are a creative English teacher specialized in General American accent. Always provide US English IPA phonetics (General American). Use /r/ in rhotic positions. Never use Japanese Romaji or Japanese pronunciations in the 'ipa' field. Variety is key.";
+    const systemPrompt = "You are a creative English teacher specialized in General American accent. Always provide US English IPA phonetics (General American). Use /r/ in rhotic positions. Never use Japanese Romaji or Japanese pronunciations in the 'ipa' field. Keep sentences simple and natural.";
     const userQuery = `
       Context: ${catInfo.context}
       Seed: ${randomSeed}
@@ -185,42 +174,114 @@ const App = () => {
       Task:
       1. Create a unique short Japanese sentence (max 15 chars).
       2. Provide a natural conversational English translation (simple vocabulary).
-      3. Provide the US English (General American) IPA for the translation. Ensure it reflects US pronunciation (e.g., 'water' with flap t, 'hot' with /ɑ/).
+      3. Provide the US English (General American) IPA.
       
       JSON: {"jp":"...","en":"...","ipa":"..."}`;
 
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: userQuery }] }],
-          generationConfig: { 
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "OBJECT",
-              properties: {
-                jp: { type: "STRING" },
-                en: { type: "STRING" },
-                ipa: { type: "STRING" }
-              },
-              required: ["jp", "en", "ipa"]
-            }
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: userQuery }] }],
+        generationConfig: { 
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              jp: { type: "STRING" },
+              en: { type: "STRING" },
+              ipa: { type: "STRING" }
+            },
+            required: ["jp", "en", "ipa"]
           }
-        })
-      });
+        }
+      })
+    });
 
-      if (!response.ok) throw new Error("API_ERROR");
-      const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      const result = JSON.parse(content);
+    if (!response.ok) throw new Error("API_ERROR");
+    const data = await response.json();
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return JSON.parse(content);
+  };
 
-      setCurrentDrill(result);
-      setHistory(prev => [...prev, result].slice(-10));
-      prefetchAudio(result.en);
+  // 初期化プロセス
+  const initApp = async () => {
+    setIsGenerating(true);
+    try {
+      const first = await generateDrillObject(category);
+      setCurrentDrill(first);
+      const audioUrl = await fetchAudio(first.en);
+      setCachedAudio(audioUrl);
+      
+      // すぐに2問目の準備を開始
+      prefetchNextDrill(category, [first]);
     } catch (err) {
-      setError("接続が不安定です。もう一度お試しください。");
+      setError("初期化に失敗しました。");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // バックグラウンドで次の問題を生成
+  const prefetchNextDrill = async (catId, currentHistory = history) => {
+    if (isPrefetching) return;
+    setIsPrefetching(true);
+    try {
+      const next = await generateDrillObject(catId);
+      setNextDrill(next);
+      const audioUrl = await fetchAudio(next.en);
+      setNextAudio(audioUrl);
+    } catch (err) {
+      console.warn("Prefetch failed", err);
+    } finally {
+      setIsPrefetching(false);
+    }
+  };
+
+  const handleNext = () => {
+    if (!nextDrill) {
+      // まだ準備ができていない場合は通常生成にフォールバック
+      generateImmediate(category);
+      return;
+    }
+
+    // 準備されていた問題を現在の問題に昇格
+    setCurrentDrill(nextDrill);
+    setCachedAudio(nextAudio);
+    setHistory(prev => [...prev, nextDrill].slice(-10));
+    
+    // 表示リセット
+    setShowAnswer(false);
+    setRecordedAudioUrl(null);
+
+    // 次の問題をクリアして新しく準備開始
+    const currentForHistory = nextDrill;
+    setNextDrill(null);
+    setNextAudio(null);
+    prefetchNextDrill(category, [...history, currentForHistory]);
+  };
+
+  // カテゴリ変更時などは即時生成
+  const generateImmediate = async (catId) => {
+    setIsGenerating(true);
+    setError(null);
+    setShowAnswer(false);
+    setRecordedAudioUrl(null);
+    setNextDrill(null);
+    setNextAudio(null);
+
+    try {
+      const res = await generateDrillObject(catId);
+      setCurrentDrill(res);
+      const audio = await fetchAudio(res.en);
+      setCachedAudio(audio);
+      setHistory(prev => [...prev, res].slice(-10));
+      
+      // 次の準備
+      prefetchNextDrill(catId, [...history, res]);
+    } catch (err) {
+      setError("接続に不安定です。");
     } finally {
       setIsGenerating(false);
     }
@@ -309,7 +370,7 @@ const App = () => {
         {CATEGORIES.map((cat) => {
           const Icon = cat.icon;
           return (
-            <button key={cat.id} onClick={() => { setCategory(cat.id); generateNewDrill(cat.id); }} className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-bold border transition-all ${category === cat.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>
+            <button key={cat.id} onClick={() => { setCategory(cat.id); generateImmediate(cat.id); }} className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-bold border transition-all ${category === cat.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>
               <Icon size={14} />{cat.label}
             </button>
           );
@@ -320,7 +381,7 @@ const App = () => {
         {isGenerating && (
           <div className="absolute inset-0 bg-white/90 dark:bg-slate-800/90 z-20 flex flex-col items-center justify-center gap-3 rounded-2xl">
             <Loader2 className="text-blue-500 animate-spin" size={32} />
-            <p className="text-xs font-bold text-slate-500">新しい問題を考えています...</p>
+            <p className="text-xs font-bold text-slate-500">準備中...</p>
           </div>
         )}
 
@@ -328,7 +389,7 @@ const App = () => {
           <div className="p-6 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl flex flex-col items-center gap-3">
             <AlertCircle size={24} />
             <p className="text-sm font-bold">{error}</p>
-            <button onClick={() => generateNewDrill(category)} className="text-xs bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 font-bold">リトライ</button>
+            <button onClick={() => generateImmediate(category)} className="text-xs bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 font-bold">リトライ</button>
           </div>
         )}
 
@@ -353,7 +414,6 @@ const App = () => {
                 {renderPhonetics(currentDrill.en, currentDrill.ipa)}
                 
                 <div className="flex items-center justify-center gap-8 mt-6">
-                  {/* モデル音声再生 */}
                   <div className="flex flex-col items-center gap-2">
                     <button onClick={() => speak(cachedAudio)} className="p-4 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full transition-all active:scale-90 border border-blue-100 dark:border-blue-800" disabled={isSpeaking || !cachedAudio}>
                       <Volume2 size={32} className={isSpeaking ? 'opacity-50 animate-pulse' : ''} />
@@ -361,7 +421,6 @@ const App = () => {
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Model</span>
                   </div>
 
-                  {/* 録音ボタン */}
                   <div className="flex flex-col items-center gap-2">
                     <button 
                       onClick={isRecording ? stopRecording : startRecording} 
@@ -374,7 +433,6 @@ const App = () => {
                     </span>
                   </div>
 
-                  {/* 録音再生 */}
                   {recordedAudioUrl && (
                     <div className="flex flex-col items-center gap-2 animate-in fade-in zoom-in">
                       <button onClick={() => speak(recordedAudioUrl)} className="p-4 text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-full transition-all active:scale-90 border border-green-100 dark:border-green-800">
@@ -392,7 +450,22 @@ const App = () => {
 
       <div className="grid grid-cols-2 gap-4">
         <button onClick={() => { if(!showAnswer && currentDrill) { setShowAnswer(true); speak(cachedAudio); } else { setShowAnswer(false); } }} disabled={isGenerating || !currentDrill} className="flex items-center justify-center gap-2 py-4 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-white rounded-xl font-bold hover:bg-slate-200 disabled:opacity-50 transition-all">{showAnswer ? <RotateCcw size={18} /> : <BookOpen size={18} />}{showAnswer ? "Hide" : "Show"}</button>
-        <button onClick={() => generateNewDrill(category)} disabled={isGenerating} className="flex items-center justify-center gap-2 py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 shadow-lg shadow-blue-200 transition-all active:translate-y-0.5">Next <Zap size={18} /></button>
+        <button 
+          onClick={handleNext} 
+          disabled={isGenerating || (!nextDrill && isPrefetching)} 
+          className="flex items-center justify-center gap-2 py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 shadow-lg shadow-blue-200 transition-all active:translate-y-0.5"
+        >
+          {(!nextDrill && isPrefetching) ? (
+            <>Preparing... <Loader2 size={18} className="animate-spin" /></>
+          ) : (
+            <>Next <Zap size={18} /></>
+          )}
+        </button>
+      </div>
+
+      {/* プリフェッチ状況のインジケーター（開発用/デバッグ用、あるいはユーザーへの安心材料として） */}
+      <div className="flex justify-center">
+         {isPrefetching && <span className="text-[10px] text-slate-400 animate-pulse flex items-center gap-1"><Sparkles size={10} /> Next drill is being prepared...</span>}
       </div>
     </div>
   );
@@ -442,7 +515,7 @@ const App = () => {
                 </div>
                 <button 
                   onClick={async () => {
-                    const url = await prefetchAudio(drill.en);
+                    const url = await fetchAudio(drill.en);
                     speak(url);
                   }}
                   className="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-full hover:bg-blue-100 transition-all active:scale-95"
