@@ -301,6 +301,10 @@ const App = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
         setRecordedAudioUrl(url);
+        
+        // 録音終了直後に自動再生
+        speak(url);
+        
         stream.getTracks().forEach(track => track.stop());
       };
       mediaRecorder.start();
