@@ -25,7 +25,10 @@ import {
   ChevronRight,
   Mic,
   Square,
-  Play
+  Play,
+  Copy,
+  Check,
+  X
 } from 'lucide-react';
 
 const apiKey = ""; // ランタイムから提供されるAPIキー
@@ -71,16 +74,20 @@ const App = () => {
   const [activeTab, setActiveTab] = useState('drill');
   const [category, setCategory] = useState('tech_meeting');
   const [currentDrill, setCurrentDrill] = useState(null);
-  const [nextDrill, setNextDrill] = useState(null); // 次の問題を保持
+  const [nextDrill, setNextDrill] = useState(null); 
   const [showAnswer, setShowAnswer] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [cachedAudio, setCachedAudio] = useState(null);
-  const [nextAudio, setNextAudio] = useState(null); // 次の音声ファイルを保持
+  const [nextAudio, setNextAudio] = useState(null); 
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isPrefetching, setIsPrefetching] = useState(false); // バックグラウンド生成中か
+  const [isPrefetching, setIsPrefetching] = useState(false); 
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]); 
   const [savedDrills, setSavedDrills] = useState([]);
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  
+  // モーダル用
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // --- 録音用ステート ---
   const [isRecording, setIsRecording] = useState(false);
@@ -88,7 +95,7 @@ const App = () => {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
-  // 初期ロード：保存されたデータの読み込みと最初の問題生成
+  // 初期ロード
   useEffect(() => {
     const saved = localStorage.getItem('qr_trainer_saved_drills');
     if (saved) {
@@ -205,7 +212,6 @@ const App = () => {
     return JSON.parse(content);
   };
 
-  // 初期化プロセス
   const initApp = async () => {
     setIsGenerating(true);
     try {
@@ -213,8 +219,6 @@ const App = () => {
       setCurrentDrill(first);
       const audioUrl = await fetchAudio(first.en);
       setCachedAudio(audioUrl);
-      
-      // すぐに2問目の準備を開始
       prefetchNextDrill(category, [first]);
     } catch (err) {
       setError("初期化に失敗しました。");
@@ -223,7 +227,6 @@ const App = () => {
     }
   };
 
-  // バックグラウンドで次の問題を生成
   const prefetchNextDrill = async (catId, currentHistory = history) => {
     if (isPrefetching) return;
     setIsPrefetching(true);
@@ -241,28 +244,20 @@ const App = () => {
 
   const handleNext = () => {
     if (!nextDrill) {
-      // まだ準備ができていない場合は通常生成にフォールバック
       generateImmediate(category);
       return;
     }
-
-    // 準備されていた問題を現在の問題に昇格
     setCurrentDrill(nextDrill);
     setCachedAudio(nextAudio);
     setHistory(prev => [...prev, nextDrill].slice(-10));
-    
-    // 表示リセット
     setShowAnswer(false);
     setRecordedAudioUrl(null);
-
-    // 次の問題をクリアして新しく準備開始
     const currentForHistory = nextDrill;
     setNextDrill(null);
     setNextAudio(null);
     prefetchNextDrill(category, [...history, currentForHistory]);
   };
 
-  // カテゴリ変更時などは即時生成
   const generateImmediate = async (catId) => {
     setIsGenerating(true);
     setError(null);
@@ -270,15 +265,12 @@ const App = () => {
     setRecordedAudioUrl(null);
     setNextDrill(null);
     setNextAudio(null);
-
     try {
       const res = await generateDrillObject(catId);
       setCurrentDrill(res);
       const audio = await fetchAudio(res.en);
       setCachedAudio(audio);
       setHistory(prev => [...prev, res].slice(-10));
-      
-      // 次の準備
       prefetchNextDrill(catId, [...history, res]);
     } catch (err) {
       setError("接続に不安定です。");
@@ -296,25 +288,21 @@ const App = () => {
     }
   };
 
-  // --- 録音ロジック ---
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
-
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
-
       mediaRecorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
         setRecordedAudioUrl(url);
         stream.getTracks().forEach(track => track.stop());
       };
-
       mediaRecorder.start();
       setIsRecording(true);
       setRecordedAudioUrl(null);
@@ -344,12 +332,35 @@ const App = () => {
     setSavedDrills(savedDrills.filter(d => d.id !== id));
   };
 
+  const handleClearAll = () => {
+    setSavedDrills([]);
+    setShowClearConfirm(false);
+  };
+
+  const copyAllSavedDrills = () => {
+    if (savedDrills.length === 0) return;
+    const textToCopy = savedDrills.map(d => {
+      return `JP: ${d.jp}\nEN: ${d.en}\nIPA: ${d.ipa}\n-------------------`;
+    }).join('\n');
+    const textArea = document.createElement("textarea");
+    textArea.value = textToCopy;
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 2000);
+    } catch (err) {
+      console.error("Copy failed", err);
+    }
+    document.body.removeChild(textArea);
+  };
+
   const renderPhonetics = (en, ipa) => {
     if (!en || !ipa) return null;
     const words = en.split(' ');
     const cleanIpa = ipa.replace(/[\/\[\]]/g, '');
     const ipas = cleanIpa.split(/\s+/);
-
     return (
       <div className="flex flex-wrap justify-center gap-x-5 gap-y-4 mb-4">
         {words.map((word, idx) => (
@@ -463,7 +474,6 @@ const App = () => {
         </button>
       </div>
 
-      {/* プリフェッチ状況のインジケーター（開発用/デバッグ用、あるいはユーザーへの安心材料として） */}
       <div className="flex justify-center">
          {isPrefetching && <span className="text-[10px] text-slate-400 animate-pulse flex items-center gap-1"><Sparkles size={10} /> Next drill is being prepared...</span>}
       </div>
@@ -476,11 +486,26 @@ const App = () => {
         <h2 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-2">
           <Bookmark size={20} className="text-amber-500" /> 復習リスト ({savedDrills.length})
         </h2>
-        {savedDrills.length > 0 && (
-          <button onClick={() => { if(confirm("全て削除しますか？")) setSavedDrills([]); }} className="text-xs text-slate-400 hover:text-red-500 font-bold flex items-center gap-1">
-            <Trash2 size={12} /> Clear All
-          </button>
-        )}
+        
+        <div className="flex items-center gap-3">
+          {savedDrills.length > 0 && (
+            <>
+              <button 
+                onClick={copyAllSavedDrills} 
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${copyFeedback ? 'bg-green-50 border-green-200 text-green-600' : 'bg-white border-slate-200 text-slate-600 hover:border-blue-400 hover:text-blue-600 shadow-sm'}`}
+              >
+                {copyFeedback ? <Check size={14} /> : <Copy size={14} />}
+                {copyFeedback ? 'Copied!' : 'Copy All'}
+              </button>
+              <button 
+                onClick={() => setShowClearConfirm(true)} 
+                className="text-xs text-slate-400 hover:text-red-500 font-bold flex items-center gap-1 px-2 py-1.5 transition-colors"
+              >
+                <Trash2 size={14} /> Clear All
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {savedDrills.length === 0 ? (
@@ -525,6 +550,38 @@ const App = () => {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* 全削除確認モーダル */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-2 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg">
+                <AlertCircle size={24} />
+              </div>
+              <button onClick={() => setShowClearConfirm(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">リストをクリアしますか？</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">保存されたすべての復習問題が削除されます。この操作は取り消せません。</p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowClearConfirm(false)} 
+                className="flex-1 py-2.5 rounded-xl font-bold text-sm bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 transition-all"
+              >
+                キャンセル
+              </button>
+              <button 
+                onClick={handleClearAll} 
+                className="flex-1 py-2.5 rounded-xl font-bold text-sm bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-200 dark:shadow-none transition-all"
+              >
+                削除する
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
